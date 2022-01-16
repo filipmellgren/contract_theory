@@ -1,0 +1,195 @@
+---
+title: "Contract theory,  'putting it all together'"
+author: "Filip Mellgren"
+date: "1/16/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(expint)
+library(tidyverse)
+theme_set(theme_minimal())
+```
+
+
+# First best
+Risk aversion means the wage is flat. The participation constraint means that $\ln{c(a)} = a^3/3 \iff c(a) = e^{a^3/3}$.
+
+The principal wants to maximize profits: $1 + a - c(a)$. The first order condition gives: $1- a^2e^{a^3/3} = 0$. I solve for this value using R.
+
+```{r}
+marginal_profit <- function(a){
+  1- exp((a^3)/3) * (a^2)
+}
+
+first_best_effort <- uniroot(marginal_profit, c(0,1))$root
+
+first_best_wage <- exp(first_best_effort^3/3)
+```
+
+1st best effort level: `r first_best_effort`.
+
+1st best wage: `r first_best_wage`.
+
+# Determine the minimum feasible bonus given u(c)
+
+To solve this exercise, I make use of the analytical expressions provided in the hints to solve first for $\tilde{\beta}$ and then for $w$.
+
+```{r}
+pc <- function(w, beta_t, a){
+  pc <- log(w) + log(1-beta_t/a) - exp(-(1-a/beta_t))*expint(1-a/beta_t) - a^3/3
+}
+
+ic <- function(beta_t, a){
+  numerator <- 1- (1-a/beta_t) * exp(-(1-a/beta_t)) * expint(1-a/beta_t)
+  denominator <- a
+  
+  ic <- numerator/denominator - a^2
+}
+```
+
+Before starting to solve for beta tilde given a, let's look at how the IC behaves around a given value for effort.
+
+```{r, echo = F}
+
+beta <- seq(30,100)/100
+
+a_val <- 0.6
+
+df <- cbind(ic = ic(beta, a_val), beta)
+
+ic_varying_beta.plot <- df %>% as_tibble() %>% ggplot(aes(x = beta, y = ic )) + geom_line() + 
+  labs(title = "IC for varying beta, given a", subtitle= paste0("a= ",a_val))
+
+
+ic_varying_beta.plot
+
+```
+The function is seemingly not well defined near the effort level which is due to the fact that EI(0) is not well defined. Use this information to constrain the search interval. As the descent in the left tail is steep, it also makes sense to limit the root finding to positive values.
+
+```{r}
+# Seemingly not well defined near a. Limit search from above based on a.
+
+solve_for_b <- function(a){
+  interval_min <- 0.05
+  interval_max <- a - 0.01
+  root <- uniroot(f = ic, interval = c(interval_min, interval_max), a = a)
+}
+
+a_vals <- seq(10,100)/100
+
+df_ic <- do.call(rbind, lapply(a_vals, solve_for_b)) %>% cbind(a_vals)
+```
+
+
+Having found beta tilde given the effort, we can now solve for the wage level given beta tilde and the effort.
+
+I begin by plotting the relationship for a given pair of effort and beta tilde.
+
+```{r, echo = F}
+# How does PC behave for varying w, given a and beta?
+wage <- seq(0,5000)/1000
+
+a_val <- df_ic[50,]$a_val
+beta <- df_ic[50,]$root
+
+df <- cbind(pc = pc(wage, beta, a_val), wage)
+
+pc_varying_wage.plot <- df %>% as_tibble() %>% ggplot(aes(x = wage, y = pc )) + geom_line() + 
+  labs(title = "PC for varying wage, given a, beta", subtitle= paste0("a= ",a_val, ". beta = ", beta))
+
+pc_varying_wage.plot
+
+```
+
+Next, solve for the wage. Computationally, I solve again for the beta tilde, given the effort, and then the wage given these two values.
+
+```{r}
+solve_for_w <- function(a_val){
+  # Find beta, given a
+  beta <- solve_for_b(a_val)$root
+  # Set interval limits (based on arbitrary guess)
+  interval_min <- 0
+  interval_max <- 10
+  # Search over PC for a wage that makes the PC binding.
+  root <- uniroot(f = pc, interval = c(interval_min, interval_max), beta = beta, a = a_val)
+  # Output the desired values
+  data_row <- cbind(beta_tilde = beta, wage = root$root, effort = a_val)
+}
+
+df <- do.call(rbind, lapply(a_vals, solve_for_w))
+
+```
+
+Now we are ready to plot the relationships.
+
+```{r}
+
+df <- as.data.frame(df) %>% 
+  mutate(beta = beta_tilde * wage,
+         profit = 1 + effort - wage) # Note that the expected incentive payout is 0 so beta doesn't affect profits directly. 
+```
+```{r, echo = F}
+wage_profit.plot <- df %>% 
+  pivot_longer(cols = c(beta, beta_tilde, wage, profit), names_to = "variable") %>% 
+  ggplot(aes(effort, value, color = variable)) + geom_line() + 
+  labs(title = "Values of key variables as fucntion of effort")
+
+wage_profit.plot
+```
+
+# Solve for optimal effort
+
+Since the profits have already been calculated and stored in a data frame, finding the optimal effort level is simple.
+```{r}
+optimal_contract <- df %>% filter(profit == max(df$profit))
+optimal_contract
+```
+As the principal must now compensate the agent for the agent's risk aversion, we find that the optimal effort is lower than under first best conditions.
+
+
+# Plot the agent's objective function given the equilibrium compensation
+
+For this exercise, we want to plot the agent's expected utility given the optimal contract and check that it is concave and finds a maximum for the effort level stipulated by the contract.
+
+Calculate the agent's expected utility as:
+
+
+$$\mathbb{E}^{a}[\log(wage^* + \beta^* L(x|a))] = \int_{0}^{\infty}\log(wage^* + \beta^* L(x|a)) f(x|a)dx$$
+For some values of $a$ and confirm that the expectation is maximized with $a^*$.
+Note that the exponential distribution has support for $x \geq 0$.
+
+
+```{r}
+Lx <- function(a, x){
+  # Continuous action, continuous distribution likelihood ratio
+  L = (x-a)/a^2
+}
+
+expected_utility <- function(x, a, wage_opt, beta_opt){
+  u <- log(wage_opt + beta_opt * Lx(a, x)) * dexp(x, rate = 1/a)
+}
+
+evaluate_exp_utility <- function(effort){
+  eu <- integrate(expected_utility, lower = 0, upper = Inf,
+                  a = effort, wage_opt = optimal_contract$wage,
+                  beta_opt = optimal_contract$beta)
+  eu <- eu$value - (effort^3)/3
+  data_row <- cbind(exp_utility = eu, effort)
+}
+
+
+df.agent <- do.call(rbind, lapply(seq(40,90)/100, evaluate_exp_utility))
+```
+
+```{r, echo = F}
+df.agent %>% as.data.frame() %>% 
+  ggplot(aes(x = effort, y = exp_utility)) + 
+  geom_line() + labs(y = "Agent objective", title = "Utility is globally concave",
+                     subtitle = "However, maximum not aligned with contract. Maybe numerical issues or a mistake somewhere.") +
+  geom_vline(xintercept = optimal_contract$effort, linetype = "dashed") +
+    geom_text(aes(x=optimal_contract$effort+0.01, label="optimal effort", y=-0.6), angle=90)
+```
+
+
